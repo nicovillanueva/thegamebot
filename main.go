@@ -5,13 +5,39 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
 var botToken = os.Getenv("BOT_TOKEN")
+var forceGroups = os.Getenv("PREADD_GROUPS")
 var recipients = []int64{}
 
+var maxDelta = 48
+var timeScale = time.Hour
+var games = []string{
+	"the game",
+	"you lost the game",
+	"lost the gaem",
+	"the game, you lost",
+	"game the lost you",
+}
+
 func main() {
+	rand.Seed(time.Now().UnixNano())
+	g := forceGroups
+	if g != "" {
+		log.Printf("[startup] pre-adding groups: %s", g)
+		for _, e := range strings.Split(g, ",") {
+			i, err := strconv.ParseInt(e, 10, 64)
+			if err != nil {
+				log.Printf("[startup] skipping invalid group ID: %s", e)
+				continue
+			}
+			registerGroup(i)
+		}
+	}
 	b, err := tb.NewBot(tb.Settings{
 		Token:  botToken,
 		Poller: &tb.LongPoller{Timeout: 10 * time.Second},
@@ -20,50 +46,45 @@ func main() {
 		log.Panicln(err)
 	}
 	b.Handle(tb.OnAddedToGroup, func(m *tb.Message) {
-		log.Printf("handling groupadd to %d", m.Chat.ID)
-		if m.FromGroup() && !alreadyRegistered(m.Chat.ID) {
-			recipients = append(recipients, m.Chat.ID)
-			log.Printf("Registered target group %d\n", m.Chat.ID)
+		log.Printf("[debog] handling groupadd to %d", m.Chat.ID)
+		if m.FromGroup() {
+			registerGroup(m.Chat.ID)
 		}
 	})
 	go b.Start()
-	log.Printf("started")
+	log.Printf("[startup] started")
+	greet(b)
 
-	var hasRunOn = -1
 	next := getRandomHour()
-	a := time.After(time.Duration(next) * time.Second)
-	log.Printf("[startup] Will run in %d hours", next)
+	a := time.After(time.Duration(next) * timeScale)
+	log.Printf("[startup] will run in %d hours", next)
 	for {
 		select {
 		case <-a:
-			if hasRunOn != time.Now().Day() {
-				for _, g := range recipients {
-					c := tb.Chat{
-						ID: g,
-					}
-					b.Send(&c, "the game")
+			for _, g := range recipients {
+				log.Printf("[debog] spamming %d", g)
+				c := tb.Chat{
+					ID: g,
 				}
-				hasRunOn = time.Now().Day()
-				a = reschedule()
-			} else {
-				log.Printf("already ran today")
+				b.Send(&c, games[rand.Intn(len(games))])
 			}
+			a = reschedule()
 		}
 	}
 }
 
 func getRandomHour() int {
-	n := rand.Intn(24)
+	n := rand.Intn(maxDelta)
 	if n == 0 {
-		n = 1
+		n = 2
 	}
 	return n
 }
 
 func reschedule() (a <-chan time.Time) {
 	h := getRandomHour()
-	log.Printf("will run at %d", h)
-	return time.After(time.Duration(h) * time.Hour)
+	log.Printf("[reschedule] will run in %d", h)
+	return time.After(time.Duration(h) * timeScale)
 }
 
 func alreadyRegistered(gid int64) bool {
@@ -73,4 +94,21 @@ func alreadyRegistered(gid int64) bool {
 		}
 	}
 	return false
+}
+
+func registerGroup(gid int64) bool {
+	if !alreadyRegistered(gid) {
+		recipients = append(recipients, gid)
+		log.Printf("[debog] registered target group %d\n", gid)
+		return true
+	}
+	log.Printf("[debog] not re-registering group %d\n", gid)
+	return false
+}
+
+func greet(b *tb.Bot) {
+	for _, g := range recipients {
+		c := tb.Chat{ID: g}
+		b.Send(&c, "hello motherfuckers")
+	}
 }
